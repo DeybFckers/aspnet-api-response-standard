@@ -1,16 +1,26 @@
 # API Response Standard
 
-This document defines the standard API response format used throughout the CRMSystem.
+This document defines the standard API response format used throughout **CRMSystem**.
 
 The goal is to make every API endpoint return a consistent response structure for both successful requests and errors.
 
+The API follows these principles:
+
+* All successful responses use a consistent `ApiResponse<T>` structure.
+* All application errors use a consistent `ErrorResponse` structure.
+* Controllers should not contain repetitive `try/catch` blocks.
+* Exceptions are handled globally through `ExceptionHandlingMiddleware`.
+* Business logic belongs in services, not controllers.
+* HTTP status codes must accurately represent the result of the request.
+* Organization-scoped resources must remain isolated in the multi-tenant CRM.
+
 ---
 
-## 1. Response Format
+# 1. Response Format
 
-All API responses should follow this general structure:
+All API responses should follow this general structure.
 
-### Success Response
+## Success Response
 
 ```json
 {
@@ -20,7 +30,7 @@ All API responses should follow this general structure:
 }
 ```
 
-### Error Response
+## Error Response
 
 ```json
 {
@@ -32,30 +42,46 @@ All API responses should follow this general structure:
 
 The response contains three properties:
 
-| Property  | Type     | Description                                       |
-| --------- | -------- | ------------------------------------------------- |
-| `success` | `bool`   | Indicates whether the request was successful      |
-| `message` | `string` | Human-readable result message                     |
-| `data`    | `object` | Response data, or `null` when no data is returned |
+| Property  | Type     | Description                                  |
+| --------- | -------- | -------------------------------------------- |
+| `success` | `bool`   | Indicates whether the request was successful |
+| `message` | `string` | Human-readable result message                |
+| `data`    | `object` | Response data, validation errors, or `null`  |
 
 ---
 
 # 2. Important Files
 
-The API response standard is mainly implemented using:
-
-* `ApiResponse.cs`
-* `ErrorResponse.cs`
-* `BaseController.cs`
-* `ExceptionMiddleware.cs`
-* `Program.cs`
-
-The responsibilities are:
+The API response standard is implemented using the following components:
 
 ```text
-ApiResponse
+Models/Responses/
+├── ApiResponse.cs
+└── ErrorResponse.cs
+
+Controllers/
+└── BaseController.cs
+
+Exceptions/
+├── BadRequestException.cs
+├── UnauthorizedException.cs
+├── ForbiddenException.cs
+├── NotFoundException.cs
+├── ConflictException.cs
+└── UnprocessableEntityException.cs
+
+Middleware/
+└── ExceptionHandlingMiddleware.cs
+
+Program.cs
+```
+
+Responsibilities:
+
+```text
+ApiResponse<T>
     ↓
-Standard success response
+Standard successful response
 
 ErrorResponse
     ↓
@@ -63,15 +89,19 @@ Standard error response
 
 BaseController
     ↓
-Provides reusable Success() methods
+Reusable success response methods
 
-ExceptionMiddleware
+Custom Exceptions
     ↓
-Handles unhandled exceptions globally
+Represent application/business errors
+
+ExceptionHandlingMiddleware
+    ↓
+Converts exceptions into HTTP error responses
 
 Program.cs
     ↓
-Registers the middleware
+Registers the global exception middleware
 ```
 
 ---
@@ -100,12 +130,15 @@ namespace CRMSystem.Models.Responses
 
 The generic `T` allows the API to return different types of data.
 
-For example:
+Examples:
 
 ```text
 ApiResponse<CustomerResponseDto>
+
 ApiResponse<OpportunityResponseDto>
+
 ApiResponse<List<CustomerResponseDto>>
+
 ApiResponse<List<OpportunityResponseDto>>
 ```
 
@@ -203,19 +236,30 @@ namespace CRMSystem.Controllers
 
 The `BaseController` provides reusable methods for successful API responses.
 
+This prevents controllers from repeatedly creating:
+
+```csharp
+return Ok(new ApiResponse<T>
+{
+    Success = true,
+    Message = "...",
+    Data = ...
+});
+```
+
 ---
 
 # 6. Inherit BaseController
 
 All API controllers should inherit from `BaseController` instead of directly inheriting from `ControllerBase`.
 
-### Before
+## Before
 
 ```csharp
 public class OpportunityController : ControllerBase
 ```
 
-### After
+## After
 
 ```csharp
 public class OpportunityController : BaseController
@@ -224,13 +268,14 @@ public class OpportunityController : BaseController
 Example:
 
 ```csharp
-[Route("api/opportunities")]
 [ApiController]
+[Route("api/opportunities")]
 public class OpportunityController : BaseController
 {
     private readonly IOpportunityServices _opportunityServices;
 
-    public OpportunityController(IOpportunityServices opportunityServices)
+    public OpportunityController(
+        IOpportunityServices opportunityServices)
     {
         _opportunityServices = opportunityServices;
     }
@@ -249,7 +294,8 @@ For GET requests:
 [HttpGet("{id:guid}")]
 public async Task<IActionResult> GetOpportunityById(Guid id)
 {
-    var opportunity = await _opportunityServices.GetOpportunityById(id);
+    var opportunity =
+        await _opportunityServices.GetOpportunityById(id);
 
     return Success(
         "Opportunity retrieved successfully.",
@@ -285,7 +331,9 @@ public async Task<IActionResult> DeleteOpportunity(Guid id)
 {
     await _opportunityServices.DeleteOpportunity(id);
 
-    return Success("Opportunity deleted successfully.");
+    return Success(
+        "Opportunity deleted successfully."
+    );
 }
 ```
 
@@ -305,29 +353,686 @@ Response:
 
 The API should use HTTP status codes to communicate the result of the request.
 
-| Status Code                 | Meaning                                                | Typical Usage                             |
-| --------------------------- | ------------------------------------------------------ | ----------------------------------------- |
-| `200 OK`                    | Request succeeded                                      | GET, PUT, PATCH, successful DELETE        |
-| `201 Created`               | Resource created                                       | POST                                      |
-| `204 No Content`            | Request succeeded without response body                | Optional for DELETE                       |
-| `400 Bad Request`           | Invalid request                                        | Invalid input, business validation        |
-| `401 Unauthorized`          | Authentication required/failed                         | Missing or invalid JWT                    |
-| `403 Forbidden`             | Authenticated but not allowed                          | Insufficient role/permission              |
-| `404 Not Found`             | Resource does not exist                                | Customer, opportunity, pipeline not found |
-| `409 Conflict`              | Resource conflicts with existing data                  | Duplicate record                          |
-| `422 Unprocessable Entity`  | Request is syntactically valid but cannot be processed | Complex validation/business rules         |
-| `500 Internal Server Error` | Unexpected server error                                | Unhandled application/server exception    |
+| Status Code                 | Meaning                                  | Typical Usage                              |
+| --------------------------- | ---------------------------------------- | ------------------------------------------ |
+| `200 OK`                    | Request succeeded                        | GET, PUT, PATCH, DELETE with response body |
+| `201 Created`               | Resource created                         | POST                                       |
+| `204 No Content`            | Request succeeded without response body  | Optional DELETE                            |
+| `400 Bad Request`           | Request is invalid                       | Invalid input or malformed request         |
+| `401 Unauthorized`          | Authentication is required or failed     | Missing/invalid JWT                        |
+| `403 Forbidden`             | Authenticated but not permitted          | Insufficient role/permission               |
+| `404 Not Found`             | Resource does not exist                  | Customer, opportunity, pipeline not found  |
+| `409 Conflict`              | Resource conflicts with existing data    | Duplicate record                           |
+| `422 Unprocessable Entity`  | Request is valid but cannot be processed | Complex business/domain rules              |
+| `500 Internal Server Error` | Unexpected server error                  | Unhandled application/server exception     |
 
 ---
 
-# 9. GET - 200 OK
+# 9. Exception Handling Architecture
 
-A successful GET request should normally return `200 OK`.
+Controllers should **not** contain repetitive `try/catch` blocks.
+
+Avoid:
+
+```csharp
+[HttpGet("{id:guid}")]
+public async Task<IActionResult> GetCustomer(Guid id)
+{
+    try
+    {
+        var customer =
+            await _customerServices.GetCustomerById(id);
+
+        return Success(
+            "Customer retrieved successfully.",
+            customer
+        );
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return NotFound(new ErrorResponse
+        {
+            Message = ex.Message
+        });
+    }
+}
+```
+
+Instead:
+
+```csharp
+[HttpGet("{id:guid}")]
+public async Task<IActionResult> GetCustomer(Guid id)
+{
+    var customer =
+        await _customerServices.GetCustomerById(id);
+
+    return Success(
+        "Customer retrieved successfully.",
+        customer
+    );
+}
+```
+
+The service throws an application exception:
+
+```csharp
+if (customer == null)
+{
+    throw new NotFoundException(
+        "Customer not found."
+    );
+}
+```
+
+The global middleware catches it and converts it into the appropriate HTTP response.
+
+---
+
+# 10. Custom Exceptions
+
+Create:
+
+```text
+Exceptions/
+├── BadRequestException.cs
+├── UnauthorizedException.cs
+├── ForbiddenException.cs
+├── NotFoundException.cs
+├── ConflictException.cs
+└── UnprocessableEntityException.cs
+```
+
+---
+
+## 10.1 BadRequestException
+
+File:
+
+```text
+Exceptions/BadRequestException.cs
+```
+
+```csharp
+namespace CRMSystem.Exceptions
+{
+    public class BadRequestException : Exception
+    {
+        public BadRequestException(string message)
+            : base(message)
+        {
+        }
+    }
+}
+```
+
+Maps to:
+
+```text
+400 Bad Request
+```
+
+Use when the request itself is invalid.
+
+Example:
+
+```csharp
+throw new BadRequestException(
+    "Customer name is required."
+);
+```
+
+---
+
+# 11. UnauthorizedException
+
+File:
+
+```text
+Exceptions/UnauthorizedException.cs
+```
+
+```csharp
+namespace CRMSystem.Exceptions
+{
+    public class UnauthorizedException : Exception
+    {
+        public UnauthorizedException(string message)
+            : base(message)
+        {
+        }
+    }
+}
+```
+
+Maps to:
+
+```text
+401 Unauthorized
+```
+
+Example:
+
+```csharp
+throw new UnauthorizedException(
+    "Authentication is required."
+);
+```
+
+### Important
+
+Normal JWT authentication should be handled by ASP.NET Core:
+
+```csharp
+[Authorize]
+```
+
+Do not manually throw `UnauthorizedException` for every missing or invalid JWT.
+
+ASP.NET Core Authentication should normally handle:
+
+* Missing JWT
+* Invalid JWT
+* Expired JWT
+* Invalid authentication credentials
+
+---
+
+# 12. ForbiddenException
+
+File:
+
+```text
+Exceptions/ForbiddenException.cs
+```
+
+```csharp
+namespace CRMSystem.Exceptions
+{
+    public class ForbiddenException : Exception
+    {
+        public ForbiddenException(string message)
+            : base(message)
+        {
+        }
+    }
+}
+```
+
+Maps to:
+
+```text
+403 Forbidden
+```
+
+Use when the user is authenticated but does not have permission to perform a particular business operation.
+
+Example:
+
+```csharp
+throw new ForbiddenException(
+    "You do not have permission to modify this customer."
+);
+```
+
+Normal role-based authorization should still use:
+
+```csharp
+[Authorize(Roles = "Admin, SalesManager")]
+```
+
+---
+
+# 13. NotFoundException
+
+File:
+
+```text
+Exceptions/NotFoundException.cs
+```
+
+```csharp
+namespace CRMSystem.Exceptions
+{
+    public class NotFoundException : Exception
+    {
+        public NotFoundException(string message)
+            : base(message)
+        {
+        }
+    }
+}
+```
+
+Maps to:
+
+```text
+404 Not Found
+```
+
+This will be one of the most frequently used exceptions in the CRM.
+
+Example:
+
+```csharp
+var customer =
+    await _customerRepository.GetByIdAsync(customerId);
+
+if (customer == null)
+{
+    throw new NotFoundException(
+        "Customer not found."
+    );
+}
+```
+
+Other examples:
+
+```csharp
+throw new NotFoundException(
+    "Customer address not found."
+);
+```
+
+```csharp
+throw new NotFoundException(
+    "Pipeline stage not found."
+);
+```
+
+```csharp
+throw new NotFoundException(
+    "Opportunity not found."
+);
+```
+
+---
+
+# 14. ConflictException
+
+File:
+
+```text
+Exceptions/ConflictException.cs
+```
+
+```csharp
+namespace CRMSystem.Exceptions
+{
+    public class ConflictException : Exception
+    {
+        public ConflictException(string message)
+            : base(message)
+        {
+        }
+    }
+}
+```
+
+Maps to:
+
+```text
+409 Conflict
+```
+
+Use when the requested operation conflicts with existing data.
+
+Example:
+
+```csharp
+throw new ConflictException(
+    "A customer with this email already exists."
+);
+```
+
+Other examples:
+
+```csharp
+throw new ConflictException(
+    "A pipeline with this name already exists."
+);
+```
+
+```csharp
+throw new ConflictException(
+    "Customer contact already exists."
+);
+```
+
+---
+
+# 15. UnprocessableEntityException
+
+File:
+
+```text
+Exceptions/UnprocessableEntityException.cs
+```
+
+```csharp
+namespace CRMSystem.Exceptions
+{
+    public class UnprocessableEntityException : Exception
+    {
+        public UnprocessableEntityException(string message)
+            : base(message)
+        {
+        }
+    }
+}
+```
+
+Maps to:
+
+```text
+422 Unprocessable Entity
+```
+
+Use this when the request is syntactically valid but a domain/business rule prevents the operation.
+
+Example:
+
+```csharp
+throw new UnprocessableEntityException(
+    "A closed opportunity cannot be moved back to an open stage."
+);
+```
+
+Another example:
+
+```csharp
+throw new UnprocessableEntityException(
+    "A lead cannot be converted without an associated customer."
+);
+```
+
+---
+
+# 16. Exception-to-HTTP Mapping
+
+The custom exceptions should map to HTTP status codes as follows:
+
+| Exception                      | HTTP Status |
+| ------------------------------ | ----------: |
+| `BadRequestException`          |       `400` |
+| `UnauthorizedException`        |       `401` |
+| `ForbiddenException`           |       `403` |
+| `NotFoundException`            |       `404` |
+| `ConflictException`            |       `409` |
+| `UnprocessableEntityException` |       `422` |
+| Unknown `Exception`            |       `500` |
+
+---
+
+# 17. ExceptionHandlingMiddleware.cs
+
+Create:
+
+```text
+Middleware/ExceptionHandlingMiddleware.cs
+```
+
+```csharp
+using System.Net;
+using CRMSystem.Exceptions;
+using CRMSystem.Models.Responses;
+
+namespace CRMSystem.Middleware
+{
+    public class ExceptionHandlingMiddleware
+    {
+        private readonly RequestDelegate _next;
+        private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+
+        public ExceptionHandlingMiddleware(
+            RequestDelegate next,
+            ILogger<ExceptionHandlingMiddleware> logger)
+        {
+            _next = next;
+            _logger = logger;
+        }
+
+        public async Task InvokeAsync(HttpContext context)
+        {
+            try
+            {
+                await _next(context);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "An unhandled exception occurred while processing the request."
+                );
+
+                await HandleExceptionAsync(context, ex);
+            }
+        }
+
+        private static async Task HandleExceptionAsync(
+            HttpContext context,
+            Exception exception)
+        {
+            var statusCode = exception switch
+            {
+                BadRequestException =>
+                    (int)HttpStatusCode.BadRequest,
+
+                UnauthorizedException =>
+                    (int)HttpStatusCode.Unauthorized,
+
+                ForbiddenException =>
+                    (int)HttpStatusCode.Forbidden,
+
+                NotFoundException =>
+                    (int)HttpStatusCode.NotFound,
+
+                ConflictException =>
+                    (int)HttpStatusCode.Conflict,
+
+                UnprocessableEntityException =>
+                    StatusCodes.Status422UnprocessableEntity,
+
+                _ =>
+                    (int)HttpStatusCode.InternalServerError
+            };
+
+            var message = exception switch
+            {
+                BadRequestException =>
+                    exception.Message,
+
+                UnauthorizedException =>
+                    exception.Message,
+
+                ForbiddenException =>
+                    exception.Message,
+
+                NotFoundException =>
+                    exception.Message,
+
+                ConflictException =>
+                    exception.Message,
+
+                UnprocessableEntityException =>
+                    exception.Message,
+
+                _ =>
+                    "An unexpected error occurred."
+            };
+
+            var response = new ErrorResponse
+            {
+                Success = false,
+                Message = message,
+                Data = null
+            };
+
+            context.Response.StatusCode = statusCode;
+            context.Response.ContentType = "application/json";
+
+            await context.Response.WriteAsJsonAsync(response);
+        }
+    }
+}
+```
+
+---
+
+# 18. Register ExceptionHandlingMiddleware
+
+In `Program.cs`:
+
+```csharp
+using CRMSystem.Middleware;
+```
+
+Then:
+
+```csharp
+var app = builder.Build();
+
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+```
+
+The exception middleware should be registered before the application components whose exceptions it needs to catch.
+
+---
+
+# 19. Service Layer Usage
+
+Business exceptions should normally be thrown from the service layer.
+
+Example:
+
+```csharp
+public async Task<CustomerResponseDto> GetCustomerById(
+    Guid customerId)
+{
+    var customer =
+        await _customerRepository.GetByIdAsync(
+            customerId
+        );
+
+    if (customer == null)
+    {
+        throw new NotFoundException(
+            "Customer not found."
+        );
+    }
+
+    return MapToResponse(customer);
+}
+```
+
+For duplicate data:
+
+```csharp
+var existingCustomer =
+    await _customerRepository.GetByEmailAsync(
+        dto.Email
+    );
+
+if (existingCustomer != null)
+{
+    throw new ConflictException(
+        "A customer with this email already exists."
+    );
+}
+```
+
+For business rules:
+
+```csharp
+if (opportunity.Status == "CLOSED")
+{
+    throw new UnprocessableEntityException(
+        "A closed opportunity cannot be modified."
+    );
+}
+```
+
+---
+
+# 20. Controller Responsibility
+
+Controllers should primarily handle HTTP/API concerns.
+
+Example:
+
+```csharp
+[HttpGet("{customerId:guid}")]
+public async Task<IActionResult> GetCustomerById(
+    Guid customerId)
+{
+    var customer =
+        await _customerServices.GetCustomerById(
+            customerId
+        );
+
+    return Success(
+        "Customer retrieved successfully.",
+        customer
+    );
+}
+```
+
+There should normally be no repetitive exception handling:
+
+```csharp
+try
+{
+    // ...
+}
+catch
+{
+    // ...
+}
+```
+
+inside every controller action.
+
+The general responsibility is:
+
+```text
+Controller
+    ↓
+HTTP/API concerns
+
+Service
+    ↓
+Business logic and rules
+
+Repository
+    ↓
+Database access
+
+ExceptionHandlingMiddleware
+    ↓
+Global exception → HTTP response
+```
+
+---
+
+# 21. GET - 200 OK
+
+A successful GET request normally returns:
+
+```text
+200 OK
+```
 
 Example:
 
 ```http
-GET /api/opportunities/8a4d0000-0000-0000-0000-000000000000
+GET /api/opportunities/{id}
 ```
 
 Response:
@@ -347,9 +1052,13 @@ Response:
 
 ---
 
-# 10. POST - 201 Created
+# 22. POST - 201 Created
 
-POST requests that successfully create a resource should normally return `201 Created`.
+POST requests that successfully create a resource should normally return:
+
+```text
+201 Created
+```
 
 Example:
 
@@ -379,13 +1088,31 @@ Response:
 }
 ```
 
-For a production API, the response can optionally return the newly created resource.
+The API may optionally return the newly created resource:
+
+```json
+{
+  "success": true,
+  "message": "Opportunity created successfully.",
+  "data": {
+    "id": "8a4d0000-0000-0000-0000-000000000000",
+    "name": "Hospital Queue System",
+    "value": 150000
+  }
+}
+```
 
 ---
 
-# 11. PUT - 200 OK
+# 23. PUT - 200 OK
 
-A successful update normally returns `200 OK`.
+A successful full update normally returns:
+
+```text
+200 OK
+```
+
+Example:
 
 ```json
 {
@@ -395,11 +1122,28 @@ A successful update normally returns `200 OK`.
 }
 ```
 
+If the API returns the updated resource:
+
+```json
+{
+  "success": true,
+  "message": "Opportunity updated successfully.",
+  "data": {
+    "id": "8a4d0000-0000-0000-0000-000000000000",
+    "name": "Updated Opportunity"
+  }
+}
+```
+
 ---
 
-# 12. PATCH - 200 OK
+# 24. PATCH - 200 OK
 
-A successful partial update normally returns `200 OK`.
+A successful partial update normally returns:
+
+```text
+200 OK
+```
 
 Example:
 
@@ -419,9 +1163,17 @@ Response:
 
 ---
 
-# 13. DELETE - 200 OK
+# 25. DELETE - 200 OK
 
-A successful DELETE can return `200 OK` with the standard response:
+A DELETE operation may return:
+
+```text
+200 OK
+```
+
+when the API returns the standard response body.
+
+Example:
 
 ```json
 {
@@ -431,22 +1183,22 @@ A successful DELETE can return `200 OK` with the standard response:
 }
 ```
 
-Alternatively, the API may use `204 No Content` when no response body is needed.
+For endpoints that do not need a response body, `204 No Content` may also be used.
 
-For this CRM API, `200 OK` can be used consistently when returning the standard response body.
+For consistency, CRMSystem may use `200 OK` when returning `ApiResponse`.
 
 ---
 
-# 14. 400 Bad Request
+# 26. 400 Bad Request
 
-Use `400 Bad Request` when the client sends an invalid request or violates a business rule.
+Use `400 Bad Request` when the request itself is invalid.
 
 Example:
 
 ```json
 {
   "success": false,
-  "message": "Pipeline stage does not belong to the opportunity pipeline.",
+  "message": "Customer name is required.",
   "data": null
 }
 ```
@@ -454,69 +1206,83 @@ Example:
 Possible causes:
 
 * Invalid request data
-* Invalid combination of IDs
-* Invalid business operation
-* Invalid value
-* Invalid state transition
+* Malformed request
+* Invalid input
+* Invalid parameter
+* Invalid combination of request values
+
+Application-level examples:
+
+```csharp
+throw new BadRequestException(
+    "Customer name is required."
+);
+```
 
 ---
 
-# 15. 401 Unauthorized
+# 27. 401 Unauthorized
 
-Use `401 Unauthorized` when the request does not contain valid authentication credentials.
-
-Example:
-
-```json
-{
-  "success": false,
-  "message": "Authentication is required.",
-  "data": null
-}
-```
+Use `401 Unauthorized` when authentication is required or authentication fails.
 
 Typical causes:
 
 * JWT is missing
-* JWT is expired
 * JWT is invalid
+* JWT is expired
 * Authentication failed
+
+Normal authentication should be handled by ASP.NET Core authentication middleware and `[Authorize]`.
+
+Example endpoint:
+
+```csharp
+[Authorize]
+[HttpGet]
+public async Task<IActionResult> GetCustomers()
+{
+    // ...
+}
+```
+
+An unauthenticated request should not reach the protected endpoint.
 
 ---
 
-# 16. 403 Forbidden
+# 28. 403 Forbidden
 
 Use `403 Forbidden` when the user is authenticated but does not have permission to perform the operation.
 
 Example:
 
-```json
+```csharp
+[Authorize(Roles = "Admin, SalesManager")]
+[HttpDelete("{id:guid}")]
+public async Task<IActionResult> DeleteCustomer(Guid id)
 {
-  "success": false,
-  "message": "You do not have permission to perform this action.",
-  "data": null
+    // ...
 }
 ```
 
-Example:
+A user who is authenticated but does not have one of the required roles should receive:
 
 ```text
-User
-    ↓
-Authenticated
-    ↓
-Role = Sales
-    ↓
-Attempt Admin-only operation
-    ↓
 403 Forbidden
+```
+
+For additional business-level permission checks:
+
+```csharp
+throw new ForbiddenException(
+    "You do not have permission to modify this customer."
+);
 ```
 
 ---
 
-# 17. 404 Not Found
+# 29. 404 Not Found
 
-Use `404 Not Found` when the requested resource does not exist within the user's organization scope.
+Use `404 Not Found` when the requested resource does not exist within the user's accessible organization scope.
 
 Example:
 
@@ -528,22 +1294,36 @@ Example:
 }
 ```
 
-For a multi-tenant CRM, resource queries should remain organization-scoped.
-
-For example:
+Service:
 
 ```csharp
-var opportunity = await _opportunityRepository
-    .GetOpportunityById(id, _currentUserServices.OrganizationId);
+if (opportunity == null)
+{
+    throw new NotFoundException(
+        "Opportunity not found."
+    );
+}
+```
+
+For the multi-tenant CRM, resource queries must remain organization-scoped.
+
+Example:
+
+```csharp
+var opportunity =
+    await _opportunityRepository.GetByIdAsync(
+        opportunityId,
+        organizationId
+    );
 ```
 
 This prevents users from accessing resources belonging to another organization.
 
 ---
 
-# 18. 409 Conflict
+# 30. 409 Conflict
 
-Use `409 Conflict` when the request conflicts with existing data.
+Use `409 Conflict` when the requested operation conflicts with existing data.
 
 Example:
 
@@ -555,37 +1335,71 @@ Example:
 }
 ```
 
-Possible uses:
+Service:
+
+```csharp
+if (existingCustomer != null)
+{
+    throw new ConflictException(
+        "Customer with this email already exists."
+    );
+}
+```
+
+Common uses:
 
 * Duplicate customer
 * Duplicate email
 * Duplicate pipeline name
 * Duplicate lead source
 * Duplicate organization data
+* Duplicate contact
 
 ---
 
-# 19. 422 Unprocessable Entity
+# 31. 422 Unprocessable Entity
 
-`422` can be used when the request is structurally valid but cannot be processed because of domain/business rules.
+Use `422 Unprocessable Entity` when the request is syntactically valid but cannot be processed because of a domain or business rule.
 
 Example:
 
 ```json
 {
   "success": false,
-  "message": "The opportunity cannot be marked as won because the required stage is incomplete.",
+  "message": "A closed opportunity cannot be moved back to an open stage.",
   "data": null
 }
 ```
 
-Whether your project uses `400` or `422` for these cases should be standardized rather than mixed randomly.
+Service:
+
+```csharp
+if (opportunity.Status == "CLOSED")
+{
+    throw new UnprocessableEntityException(
+        "A closed opportunity cannot be moved back to an open stage."
+    );
+}
+```
+
+Typical uses:
+
+* Invalid state transition
+* Business rule violation
+* Invalid domain operation
+* Resource cannot transition to the requested state
+
+`400` and `422` should not be used randomly. The project should follow this standard consistently.
 
 ---
 
-# 20. 500 Internal Server Error
+# 32. 500 Internal Server Error
 
-Unexpected exceptions should result in `500 Internal Server Error`.
+Unexpected exceptions should result in:
+
+```text
+500 Internal Server Error
+```
 
 Example:
 
@@ -597,7 +1411,7 @@ Example:
 }
 ```
 
-Internal exception details should not normally be exposed to the client in production.
+Internal exception details should not normally be exposed to clients in production.
 
 Avoid returning:
 
@@ -609,141 +1423,292 @@ Avoid returning:
 }
 ```
 
-Instead, log the actual exception on the server and return a safe message to the client.
-
----
-
-# 21. ExceptionMiddleware.cs
-
-Create:
+Instead:
 
 ```text
-Middleware/ExceptionMiddleware.cs
+Application
+    ↓
+Unexpected exception
+    ↓
+ExceptionHandlingMiddleware
+    ↓
+Log detailed exception
+    ↓
+Return safe 500 response
 ```
 
-A basic implementation:
+The middleware logs the actual exception:
 
 ```csharp
-using CRMSystem.Models.Responses;
+_logger.LogError(
+    ex,
+    "An unhandled exception occurred while processing the request."
+);
+```
 
-namespace CRMSystem.Middleware
+The client receives only:
+
+```json
 {
-    public class ExceptionMiddleware
-    {
-        private readonly RequestDelegate _next;
-
-        public ExceptionMiddleware(RequestDelegate next)
-        {
-            _next = next;
-        }
-
-        public async Task InvokeAsync(HttpContext context)
-        {
-            try
-            {
-                await _next(context);
-            }
-            catch (Exception ex)
-            {
-                await HandleExceptionAsync(context, ex);
-            }
-        }
-
-        private static async Task HandleExceptionAsync(HttpContext context, Exception ex)
-        {
-            context.Response.ContentType = "application/json";
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-
-            var response = new ErrorResponse
-            {
-                Success = false,
-                Message = "An unexpected error occurred.",
-                Data = null
-            };
-
-            await context.Response.WriteAsJsonAsync(response);
-        }
-    }
+  "success": false,
+  "message": "An unexpected error occurred.",
+  "data": null
 }
 ```
 
-The middleware catches unexpected exceptions that were not handled elsewhere.
-
 ---
 
-# 22. Register ExceptionMiddleware
+# 33. Validation Errors
 
-In `Program.cs`:
-
-```csharp
-var app = builder.Build();
-
-app.UseMiddleware<ExceptionMiddleware>();
-
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapControllers();
-
-app.Run();
-```
-
-The important part is:
-
-```csharp
-app.UseMiddleware<ExceptionMiddleware>();
-```
-
-This allows the middleware to catch exceptions thrown by downstream application components.
-
----
-
-# 23. Controller Responsibility
-
-Controllers should remain focused on HTTP concerns.
+Request validation should return a consistent error structure.
 
 Example:
 
-```csharp
-[HttpGet("{id:guid}")]
-public async Task<IActionResult> GetOpportunityById(Guid id)
+```json
 {
-    var opportunity = await _opportunityServices.GetOpportunityById(id);
+  "success": false,
+  "message": "Validation failed.",
+  "data": {
+    "name": [
+      "The Name field is required."
+    ],
+    "value": [
+      "Value must be greater than 0."
+    ]
+  }
+}
+```
+
+For example, a DTO may use:
+
+```csharp
+public class CreateCustomerDto
+{
+    [Required]
+    public string Name { get; set; } = null!;
+
+    [EmailAddress]
+    public string? Email { get; set; }
+}
+```
+
+ASP.NET Core's `[ApiController]` automatically performs model validation.
+
+The project's global response handling should preserve the standard:
+
+```text
+success
+message
+data
+```
+
+structure for validation errors.
+
+---
+
+# 34. Recommended HTTP Status Mapping
+
+| Operation      | Success | Common Errors                            |
+| -------------- | ------: | ---------------------------------------- |
+| GET collection |   `200` | `401`, `403`                             |
+| GET by ID      |   `200` | `401`, `403`, `404`                      |
+| POST           |   `201` | `400`, `401`, `403`, `409`, `422`        |
+| PUT            |   `200` | `400`, `401`, `403`, `404`, `409`, `422` |
+| PATCH          |   `200` | `400`, `401`, `403`, `404`, `409`, `422` |
+| DELETE         |   `200` | `401`, `403`, `404`, `409`               |
+
+Unexpected failures:
+
+```text
+500 Internal Server Error
+```
+
+---
+
+# 35. Example Complete API Flow
+
+Example:
+
+```http
+GET /api/customers/8a4d0000-0000-0000-0000-000000000000
+```
+
+### Step 1 — Controller
+
+```csharp
+[HttpGet("{customerId:guid}")]
+public async Task<IActionResult> GetCustomerById(Guid customerId)
+{
+    var customer =
+        await _customerServices.GetCustomerById(
+            customerId
+        );
 
     return Success(
-        "Opportunity retrieved successfully.",
-        opportunity
+        "Customer retrieved successfully.",
+        customer
     );
 }
 ```
 
-The controller should not contain large amounts of business logic.
+### Step 2 — Service
 
-The general flow should be:
+```csharp
+public async Task<CustomerResponseDto> GetCustomerById(
+    Guid customerId)
+{
+    var customer =
+        await _customerRepository.GetByIdAsync(
+            customerId
+        );
 
-```text
-Controller
-    ↓
-Service
-    ↓
-Repository
-    ↓
-Database
+    if (customer == null)
+    {
+        throw new NotFoundException(
+            "Customer not found."
+        );
+    }
+
+    return MapToResponse(customer);
+}
 ```
 
-The controller is responsible for receiving the HTTP request and returning the HTTP response.
+### Step 3 — Resource exists
 
-The service is responsible for business rules.
+The service returns the customer.
 
-The repository is responsible for database operations.
+```text
+Service
+    ↓
+CustomerResponseDto
+    ↓
+Controller
+    ↓
+200 OK
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Customer retrieved successfully.",
+  "data": {
+    "id": "8a4d0000-0000-0000-0000-000000000000",
+    "name": "ABC Corporation"
+  }
+}
+```
+
+### Step 4 — Resource does not exist
+
+The service throws:
+
+```csharp
+throw new NotFoundException(
+    "Customer not found."
+);
+```
+
+The middleware catches it:
+
+```text
+Service
+    ↓
+NotFoundException
+    ↓
+ExceptionHandlingMiddleware
+    ↓
+404 Not Found
+```
+
+Response:
+
+```json
+{
+  "success": false,
+  "message": "Customer not found.",
+  "data": null
+}
+```
 
 ---
 
-# 24. Recommended Response Standard
+# 36. Final Architecture
 
-For CRMSystem, use the following standard:
+The response architecture should follow this pattern:
 
-### Successful request
+```text
+                         HTTP Request
+                              │
+                              ▼
+                    ┌──────────────────┐
+                    │    Controller    │
+                    │  HTTP concerns   │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │     Service      │
+                    │  Business logic  │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │    Repository    │
+                    │  Data access     │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                         Database
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │     Service      │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │ BaseController   │
+                    │ ApiResponse<T>   │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                        HTTP 2xx
+```
+
+For errors:
+
+```text
+Controller
+    │
+    ▼
+Service
+    │
+    │ throws
+    ▼
+Custom Exception
+    │
+    ▼
+ExceptionHandlingMiddleware
+    │
+    ├── 400 Bad Request
+    ├── 401 Unauthorized
+    ├── 403 Forbidden
+    ├── 404 Not Found
+    ├── 409 Conflict
+    ├── 422 Unprocessable Entity
+    └── 500 Internal Server Error
+             │
+             ▼
+       ErrorResponse
+```
+
+---
+
+# 37. Final API Contract
+
+Every successful response should follow:
 
 ```json
 {
@@ -753,7 +1718,7 @@ For CRMSystem, use the following standard:
 }
 ```
 
-### Failed request
+Every application error should follow:
 
 ```json
 {
@@ -763,7 +1728,7 @@ For CRMSystem, use the following standard:
 }
 ```
 
-### Validation failure
+Validation errors may use:
 
 ```json
 {
@@ -777,122 +1742,133 @@ For CRMSystem, use the following standard:
 }
 ```
 
----
-
-# 25. Recommended HTTP Status Mapping
-
-| Operation      | Success | Common Errors                     |
-| -------------- | ------: | --------------------------------- |
-| GET collection |   `200` | `401`, `403`                      |
-| GET by ID      |   `200` | `401`, `403`, `404`               |
-| POST           |   `201` | `400`, `401`, `403`, `409`        |
-| PUT            |   `200` | `400`, `401`, `403`, `404`, `409` |
-| PATCH          |   `200` | `400`, `401`, `403`, `404`, `409` |
-| DELETE         |   `200` | `401`, `403`, `404`               |
-
-Unexpected server failures should return:
-
-```text
-500 Internal Server Error
-```
+The API should consistently use HTTP status codes together with these response structures.
 
 ---
 
-# 26. Final Architecture
+# 38. Implementation Checklist
 
-The response system should work like this:
+When adding a new CRM feature, follow this checklist:
+
+### Response
+
+* [ ] Use `ApiResponse<T>` for successful responses.
+* [ ] Use `ErrorResponse` for application errors.
+* [ ] Use `BaseController` for reusable success responses.
+
+### Exceptions
+
+* [ ] Use `BadRequestException` for invalid requests.
+* [ ] Use `UnauthorizedException` only for application-level authentication failures.
+* [ ] Use `ForbiddenException` for application-level permission failures.
+* [ ] Use `NotFoundException` when a resource does not exist.
+* [ ] Use `ConflictException` for duplicate/conflicting data.
+* [ ] Use `UnprocessableEntityException` for domain/business-rule failures.
+* [ ] Allow unexpected exceptions to become `500 Internal Server Error`.
+
+### Controllers
+
+* [ ] Do not add repetitive `try/catch` blocks.
+* [ ] Keep controllers focused on HTTP concerns.
+* [ ] Delegate business logic to services.
+* [ ] Return the appropriate HTTP status code.
+
+### Services
+
+* [ ] Perform business validation.
+* [ ] Check organization/tenant scope.
+* [ ] Throw the appropriate custom exception.
+* [ ] Do not return HTTP responses from services.
+
+### Repositories
+
+* [ ] Handle database access only.
+* [ ] Keep organization-scoping requirements in repository/service queries as appropriate.
+* [ ] Avoid exposing database-specific exceptions directly to API clients.
+
+### Security
+
+* [ ] Never expose stack traces in production responses.
+* [ ] Never expose database exception details to clients.
+* [ ] Keep resources organization-scoped.
+* [ ] Use `[Authorize]` and role/policy authorization for access control.
+* [ ] Log unexpected exceptions server-side.
+
+---
+
+# 39. Summary
+
+The CRMSystem API response architecture consists of:
 
 ```text
-                    HTTP Request
-                         │
-                         ▼
-                   Controller
-                         │
-                         ▼
-                     Service
-                         │
-                         ▼
-                   Repository
-                         │
-                         ▼
-                     Database
-                         │
-                         ▼
-                   Service Result
-                         │
-                         ▼
-                   BaseController
-                         │
-                         ▼
-                  ApiResponse<T>
-                         │
-                         ▼
-                    HTTP Response
-```
+ApiResponse<T>
+    ↓
+Standard successful responses
 
-For unexpected errors:
-
-```text
-Controller
-    │
-    ▼
-Service
-    │
-    ├── Exception
-    │
-    ▼
-ExceptionMiddleware
-    │
-    ▼
 ErrorResponse
-    │
-    ▼
-HTTP 500
-```
+    ↓
+Standard error responses
 
-This approach keeps the API response format consistent across Customers, Leads, Opportunities, Pipelines, Tasks, Activities, Notes, Users, and other CRM resources.
+BaseController
+    ↓
+Reusable controller response methods
 
----
+Custom Exceptions
+    ↓
+Application/business errors
 
-## Summary
-
-The minimum components required are:
-
-```text
-ApiResponse.cs
-    → Standard successful response
-
-ErrorResponse.cs
-    → Standard error response
-
-BaseController.cs
-    → Reusable Success() methods
-
-ExceptionMiddleware.cs
-    → Global unexpected exception handling
+ExceptionHandlingMiddleware
+    ↓
+Centralized exception → HTTP status conversion
 
 Program.cs
-    → Middleware registration
+    ↓
+Global middleware registration
 ```
 
-The overall API contract is:
+The final API contract is:
 
 ```text
 SUCCESS
 HTTP 2xx
-{
-    success: true,
-    message: "...",
-    data: ...
-}
 
-ERROR
-HTTP 4xx / 5xx
 {
-    success: false,
-    message: "...",
-    data: ...
+    "success": true,
+    "message": "...",
+    "data": ...
 }
 ```
 
-This gives the frontend a predictable response structure regardless of which CRM endpoint it calls.
+```text
+ERROR
+HTTP 4xx / 5xx
+
+{
+    "success": false,
+    "message": "...",
+    "data": ...
+}
+```
+
+This standard should be followed consistently across all CRMSystem modules, including:
+
+```text
+Organizations
+Users
+Customers
+Customer Contacts
+Customer Addresses
+Leads
+Lead Sources
+Lead Statuses
+Pipelines
+Pipeline Stages
+Opportunities
+Tasks
+Activities
+Notes
+Audit Logs
+Refresh Tokens
+```
+
+The objective is to maintain a predictable API contract while keeping controllers clean, services responsible for business logic, repositories responsible for data access, and exception handling centralized.
