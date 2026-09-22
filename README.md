@@ -230,6 +230,15 @@ namespace CRMSystem.Controllers
                 Data = null
             });
         }
+        protected IActionResult Created<T>(string message, T data)
+        {
+            return StatusCode(StatusCodes.Status201Created, new ApiResponse<T> { Success = true, Message = message, Data = data });
+        }
+
+        protected IActionResult Created(string message)
+        {
+            return StatusCode(StatusCodes.Status201Created, new ApiResponse<object> { Success = true, Message = message, Data = null });
+        }
     }
 }
 ```
